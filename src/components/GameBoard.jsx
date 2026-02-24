@@ -14,9 +14,9 @@ const LEADERBOARD_LIMIT = 10;
 // Fungsi generate blockChoices di luar komponen agar tidak dibuat ulang setiap render
 const generateBlockChoices = () => {
   const shuffled = [...blockShapes].sort(() => Math.random() - 0.5);
-
   return shuffled.slice(0, 3).map((block, index) => ({
     ...block,
+    id: `block-${Date.now()}-${index}-${Math.random()}`,
     color: COLORS[Math.floor(Math.random() * COLORS.length)]
   }));
 };
@@ -54,37 +54,34 @@ function GameBoard() {
   const [isGameOver, setIsGameOver] = useState(false);
   const [combo, setCombo] = useState(0);
   const [maxCombo, setMaxCombo] = useState(0);
-  const [draggedBlockId, setDraggedBlockId] = useState(null);
-  const [mousePosition, setMousePosition] = useState({ x: 0, y: 0 });
+  
+  // State untuk drag system baru
+  const [draggedBlock, setDraggedBlock] = useState(null);
+  const [dragPosition, setDragPosition] = useState({ x: 0, y: 0 });
+  const [isDragging, setIsDragging] = useState(false);
+  const [dragStartCell, setDragStartCell] = useState(null);
+  const [touchIdentifier, setTouchIdentifier] = useState(null);
   
   // State user & leaderboard
   const [user, setUser] = useState(null);
   const [highScore, setHighScore] = useState(0);
   const [username, setUsername] = useState("");
   const [leaderboard, setLeaderboard] = useState([]);
-  const [leaderboardType, setLeaderboardType] = useState("global"); // "global" or "weekly"
+  const [leaderboardType, setLeaderboardType] = useState("global");
   const [prevRank, setPrevRank] = useState(null);
   const [currentRank, setCurrentRank] = useState(null);
   const [showRankUp, setShowRankUp] = useState(false);
   const [rankUpMessage, setRankUpMessage] = useState("");
   
-  // Sound refs
+  // Refs
+  const boardRef = useRef(null);
+  const dragPreviewRef = useRef(null);
   const placeSound = useRef(new Audio("/sounds/stone.mp3"));
   const clearSound = useRef(new Audio("/sounds/finish.mp3"));
   const rankUpSound = useRef(new Audio("/sounds/rankup.mp3"));
   
   // Confetti trigger untuk rank 1
   const [showFireGlow, setShowFireGlow] = useState(false);
-
-  // Track mouse position untuk drag preview
-  useEffect(() => {
-    const handleMouseMove = (e) => {
-      setMousePosition({ x: e.clientX, y: e.clientY });
-    };
-    
-    window.addEventListener('mousemove', handleMouseMove);
-    return () => window.removeEventListener('mousemove', handleMouseMove);
-  }, []);
 
   // Fungsi memilih warna random untuk block yang ditempatkan
   const getRandomColor = useCallback(() => {
@@ -101,7 +98,7 @@ function GameBoard() {
           if (
             y >= BOARD_SIZE ||
             x >= BOARD_SIZE ||
-            customBoard[y][x] !== 0
+            (customBoard[y] && customBoard[y][x] !== 0)
           ) {
             return false;
           }
@@ -187,89 +184,162 @@ function GameBoard() {
     }
   }, [maxCombo]);
 
-  // Handler saat drop block di papan
-  const handleDrop = useCallback(async (e, row, col) => {
-    if (isGameOver) return;
-
-    const blockData = e.dataTransfer.getData("block");
-    if (!blockData) return;
-    const block = JSON.parse(blockData);
-    const shape = block.shape;
+  // Fungsi untuk mendapatkan cell dari koordinat pointer
+  const getCellFromCoordinates = useCallback((clientX, clientY) => {
+    if (!boardRef.current) return null;
     
+    const boardRect = boardRef.current.getBoundingClientRect();
+    const cellSize = boardRect.width / BOARD_SIZE;
+    
+    // Hitung baris dan kolom berdasarkan posisi pointer
+    const relativeX = clientX - boardRect.left;
+    const relativeY = clientY - boardRect.top;
+    
+    if (relativeX < 0 || relativeX > boardRect.width || 
+        relativeY < 0 || relativeY > boardRect.height) {
+      return null;
+    }
+    
+    const col = Math.floor(relativeX / cellSize);
+    const row = Math.floor(relativeY / cellSize);
+    
+    if (row >= 0 && row < BOARD_SIZE && col >= 0 && col < BOARD_SIZE) {
+      return { row, col };
+    }
+    
+    return null;
+  }, []);
 
-    if (!canPlaceBlock(shape, row, col)) return;
+  // Handler untuk memulai drag (Pointer Down)
+  const handlePointerDown = useCallback((e, block) => {
+    e.preventDefault(); // Mencegah default behavior (termasuk HTML5 drag)
+    
+    // Simpan identifier untuk touch events
+    if (e.pointerId) {
+      setTouchIdentifier(e.pointerId);
+      (e.target).setPointerCapture(e.pointerId);
+    }
+    
+    setDraggedBlock({
+      ...block,
+      offsetX: e.clientX,
+      offsetY: e.clientY
+    });
+    setIsDragging(true);
+    setDragPosition({ x: e.clientX, y: e.clientY });
+    
+    // Simpan posisi awal untuk deteksi drag threshold
+    setDragStartCell(getCellFromCoordinates(e.clientX, e.clientY));
+  }, [getCellFromCoordinates]);
 
-    // Tempatkan block di board baru
-    const newBoard = board.map((r) => [...r]);
-    const color = block.color;
+  // Handler untuk pergerakan drag (Pointer Move)
+  const handlePointerMove = useCallback((e) => {
+    if (!isDragging || !draggedBlock) return;
+    
+    e.preventDefault();
+    
+    setDragPosition({ x: e.clientX, y: e.clientY });
+    
+    // Optional: Highlight cell yang sedang di-hover
+    const hoveredCell = getCellFromCoordinates(e.clientX, e.clientY);
+    // Bisa tambahkan logic highlight di sini
+  }, [isDragging, draggedBlock, getCellFromCoordinates]);
 
-    for (let i = 0; i < shape.length; i++) {
-      for (let j = 0; j < shape[i].length; j++) {
-        if (shape[i][j]) {
-          newBoard[row + i][col + j] = color;
+  // Handler untuk mengakhiri drag (Pointer Up)
+  const handlePointerUp = useCallback(async (e) => {
+    if (!isDragging || !draggedBlock) {
+      // Reset state jika tidak ada drag yang aktif
+      setIsDragging(false);
+      setDraggedBlock(null);
+      if (touchIdentifier) {
+        setTouchIdentifier(null);
+      }
+      return;
+    }
+    
+    e.preventDefault();
+    
+    // Release pointer capture
+    if (touchIdentifier) {
+      try {
+        (e.target).releasePointerCapture(touchIdentifier);
+      } catch (err) {
+        // Ignore error jika release pointer capture gagal
+      }
+      setTouchIdentifier(null);
+    }
+    
+    // Cek apakah drop berada di dalam board
+    const dropCell = getCellFromCoordinates(e.clientX, e.clientY);
+    
+    if (dropCell && !isGameOver) {
+      const { row, col } = dropCell;
+      const block = draggedBlock;
+      
+      // Cek apakah block bisa ditempatkan
+      if (canPlaceBlock(block.shape, row, col)) {
+        // Tempatkan block di board baru
+        const newBoard = board.map((r) => [...r]);
+        const color = block.color;
+
+        for (let i = 0; i < block.shape.length; i++) {
+          for (let j = 0; j < block.shape[i].length; j++) {
+            if (block.shape[i][j]) {
+              newBoard[row + i][col + j] = color;
+            }
+          }
+        }
+
+        // Play place sound
+        if (placeSound.current) {
+          placeSound.current.currentTime = 0;
+          placeSound.current.play().catch(() => {});
+        }
+
+        // Clear lines jika ada
+        const clearedBoard = await clearFullLines(newBoard);
+        setBoard(clearedBoard);
+
+        // Update blockChoices
+        const newChoices = blockChoices.filter((b) => b.id !== block.id);
+        const remainingBlocks = newChoices.length === 0 ? generateBlockChoices() : newChoices;
+
+        // Cek game over
+        if (!hasValidMove(remainingBlocks, clearedBoard)) {
+          setIsGameOver(true);
+        } else {
+          setBlockChoices(remainingBlocks);
         }
       }
     }
+    
+    // Reset drag state
+    setIsDragging(false);
+    setDraggedBlock(null);
+  }, [isDragging, draggedBlock, touchIdentifier, isGameOver, board, blockChoices, canPlaceBlock, clearFullLines, hasValidMove, getCellFromCoordinates]);
 
-    // Play place sound
-    if (placeSound.current) {
-      placeSound.current.currentTime = 0;
-      placeSound.current.play().catch(() => {});
-    }
-
-    // Clear lines jika ada
-    const clearedBoard = await clearFullLines(newBoard);
-    setBoard(clearedBoard);
-
-    // Update blockChoices
-    const newChoices = blockChoices.filter((b) => b.id !== block.id);
-    const remainingBlocks = newChoices.length === 0 ? generateBlockChoices() : newChoices;
-
-    // Cek game over
-    if (!hasValidMove(remainingBlocks, clearedBoard)) {
-      setIsGameOver(true);
-    } else {
-      setBlockChoices(remainingBlocks);
+  // Global pointer event handlers
+  useEffect(() => {
+    const handleGlobalPointerMove = (e) => {
+      handlePointerMove(e);
+    };
+    
+    const handleGlobalPointerUp = (e) => {
+      handlePointerUp(e);
+    };
+    
+    if (isDragging) {
+      window.addEventListener('pointermove', handleGlobalPointerMove);
+      window.addEventListener('pointerup', handleGlobalPointerUp);
+      window.addEventListener('pointercancel', handleGlobalPointerUp);
     }
     
-    setDraggedBlockId(null);
-  }, [isGameOver, board, blockChoices, canPlaceBlock, getRandomColor, clearFullLines, hasValidMove]);
-
-  // Handler drag start
-  const handleDragStart = useCallback((e, shape, blockId) => {
-    const block = blockChoices.find((b) => b.id === blockId);
-    if (block) {
-      setDraggedBlockId(blockId);
-      e.dataTransfer.setData("block", JSON.stringify({ id: block.id, shape: block.shape, color: block.color }));
-      e.dataTransfer.effectAllowed = "move";
-      
-      // Buat elemen preview custom
-      const dragPreview = document.createElement("div");
-      dragPreview.className = "fixed pointer-events-none opacity-90";
-      dragPreview.style.transform = "scale(1)";
-      
-      // Render block preview dengan warna random
-      const color = block.color;
-      shape.forEach((row, i) => {
-        row.forEach((cell, j) => {
-          if (cell) {
-            const blockCell = document.createElement("div");
-            blockCell.className = `absolute w-10 h-10 ${color} rounded shadow-inner border border-white/20`;
-            blockCell.style.left = `${j * 40}px`;
-            blockCell.style.top = `${i * 40}px`;
-            dragPreview.appendChild(blockCell);
-          }
-        });
-      });
-      
-      document.body.appendChild(dragPreview);
-      e.dataTransfer.setDragImage(dragPreview, 20, 20);
-      
-      setTimeout(() => {
-        document.body.removeChild(dragPreview);
-      }, 0);
-    }
-  }, [blockChoices]);
+    return () => {
+      window.removeEventListener('pointermove', handleGlobalPointerMove);
+      window.removeEventListener('pointerup', handleGlobalPointerUp);
+      window.removeEventListener('pointercancel', handleGlobalPointerUp);
+    };
+  }, [isDragging, handlePointerMove, handlePointerUp]);
 
   // Restart game
   const restartGame = useCallback(() => {
@@ -280,7 +350,8 @@ function GameBoard() {
     setIsGameOver(false);
     setCombo(0);
     setMaxCombo(0);
-    setDraggedBlockId(null);
+    setIsDragging(false);
+    setDraggedBlock(null);
   }, []);
 
   // Fungsi trigger confetti
@@ -313,7 +384,6 @@ function GameBoard() {
   useEffect(() => {
     if (prevRank !== null && currentRank !== null) {
       if (currentRank < prevRank) {
-        // Rank naik (angka lebih kecil = rank lebih bagus)
         const rankDiff = prevRank - currentRank;
         setRankUpMessage(`🎉 You moved up ${rankDiff} rank${rankDiff > 1 ? 's' : ''}!`);
         setShowRankUp(true);
@@ -326,12 +396,9 @@ function GameBoard() {
         setTimeout(() => setShowRankUp(false), 3000);
       }
       
-      // Jika jadi rank 1, trigger fire glow dan confetti
       if (currentRank === 1) {
         setShowFireGlow(true);
         triggerConfetti();
-        
-        // Fire glow animation selama 3 detik
         setTimeout(() => setShowFireGlow(false), 3000);
       }
     }
@@ -362,7 +429,6 @@ function GameBoard() {
       (data) => {
         setLeaderboard(data);
         
-        // Cari rank user saat ini
         if (user) {
           const userIndex = data.findIndex(entry => entry.userId === user.uid);
           setPrevRank(currentRank);
@@ -388,16 +454,12 @@ function GameBoard() {
     return leaderboard.find(entry => entry.userId === user?.uid);
   }, [leaderboard, user]);
 
-  const handleDragEnd = useCallback(() => {
-    setDraggedBlockId(null);
-  }, []);
-
   // Calculate cell size based on screen width
   const getCellSize = () => {
     if (typeof window !== 'undefined') {
-      if (window.innerWidth < 640) return 32; // Mobile
-      if (window.innerWidth < 1024) return 36; // Tablet
-      return 40; // Desktop
+      if (window.innerWidth < 640) return 32;
+      if (window.innerWidth < 1024) return 36;
+      return 40;
     }
     return 40;
   };
@@ -409,7 +471,7 @@ function GameBoard() {
       setCellSize(getCellSize());
     };
     
-    handleResize(); // Set initial value
+    handleResize();
     window.addEventListener('resize', handleResize);
     return () => window.removeEventListener('resize', handleResize);
   }, []);
@@ -445,35 +507,34 @@ function GameBoard() {
         </div>
       )}
 
-      {/* Drag Preview - Block yang mengikuti mouse */}
-      {draggedBlockId && (
+      {/* Drag Preview - Block yang mengikuti pointer */}
+      {isDragging && draggedBlock && (
         <div 
+          ref={dragPreviewRef}
           className="fixed pointer-events-none z-50 opacity-80"
           style={{ 
-            left: mousePosition.x - (cellSize * 0.5), 
-            top: mousePosition.y - (cellSize * 0.5),
-            transform: 'scale(0.8)'
+            left: dragPosition.x - (cellSize * 2), 
+            top: dragPosition.y - (cellSize * 2),
+            transform: 'scale(0.8)',
+            transition: 'none'
           }}
         >
-          {blockChoices.find(b => b.id === draggedBlockId) && (
-            <Block 
-              shape={blockChoices.find(b => b.id === draggedBlockId).shape}
-              onDragStart={() => {}}
-              isDragging={true}
-              cellSize={cellSize}
-            />
-          )}
+          <Block 
+            shape={draggedBlock.shape}
+            color={draggedBlock.color}
+            isDragging={true}
+            cellSize={cellSize}
+          />
         </div>
       )}
 
-      {/* Main Content Container - Responsive layout */}
+      {/* Main Content Container */}
       <div className="container mx-auto px-3 sm:px-4 py-4 sm:py-6">
-        {/* Desktop: Flex row, Mobile: Flex column */}
         <div className="flex flex-col lg:flex-row gap-4 lg:gap-6 items-start justify-center">
           
-          {/* Game Board Section - Takes full width on mobile, fixed width on desktop */}
+          {/* Game Board Section */}
           <div className="w-full lg:w-auto bg-gray-800 bg-opacity-70 rounded-xl shadow-2xl p-4 sm:p-6 backdrop-blur-sm mx-auto">
-            {/* Header - Responsive layout */}
+            {/* Header */}
             <div className="flex flex-col sm:flex-row justify-between items-center mb-4 sm:mb-6 gap-3 sm:gap-4">
               <div className="text-center sm:text-left">
                 <h1 className="text-2xl sm:text-3xl font-bold text-transparent bg-clip-text bg-gradient-to-r from-yellow-400 to-orange-500">
@@ -535,13 +596,19 @@ function GameBoard() {
               </div>
             )}
 
-            {/* Game Board - Responsive grid with dynamic cell size */}
-            <div className="flex justify-center mb-4 sm:mb-6 overflow-x-auto">
-              <div className="grid bg-gray-700 rounded-lg shadow-lg"
+            {/* Game Board - dengan ref untuk tracking posisi */}
+            <div 
+              ref={boardRef}
+              className="flex justify-center mb-4 sm:mb-6 overflow-x-auto"
+            >
+              <div 
+                className="grid bg-gray-700 rounded-lg shadow-lg select-none"
                 style={{
                   gridTemplateColumns: `repeat(${BOARD_SIZE}, ${cellSize}px)`,
-                  width: 'fit-content'
-                }}>
+                  width: 'fit-content',
+                  touchAction: 'none' // Mencegah scroll saat drag di mobile
+                }}
+              >
                 {board.map((row, rowIndex) =>
                   row.map((cell, colIndex) => {
                     const isHighlighted = highlighted.some(
@@ -550,8 +617,6 @@ function GameBoard() {
                     return (
                       <div
                         key={`${rowIndex}-${colIndex}`}
-                        onDragOver={(e) => e.preventDefault()}
-                        onDrop={(e) => handleDrop(e, rowIndex, colIndex)}
                         className={`flex items-center justify-center
                           bg-gray-800
                           border border-gray-700
@@ -570,22 +635,23 @@ function GameBoard() {
               </div>
             </div>
 
-            {/* Block Choices */}
+            {/* Block Choices - dengan Pointer Events */}
             <div className="bg-gray-800/80 rounded-xl p-3 sm:p-4 border-2 border-gray-700 shadow-lg mb-3 sm:mb-4">
               <h3 className="text-white font-medium mb-2 sm:mb-3 text-center text-xs sm:text-sm">BLOCK PILIHAN</h3>
               <div className="flex gap-2 sm:gap-4 justify-center items-center p-2 bg-gray-900/50 rounded-lg flex-wrap">
                 {blockChoices.map((block, idx) => (
                   <div 
-                    key={idx}
-                    className={`relative transition-opacity ${
-                      draggedBlockId === block.id ? 'opacity-0' : 'opacity-100'
+                    key={block.id}
+                    className={`relative transition-opacity cursor-grab active:cursor-grabbing touch-none ${
+                      isDragging && draggedBlock?.id === block.id ? 'opacity-0' : 'opacity-100'
                     }`}
-                    onDragStart={(e) => handleDragStart(e, block.shape, block.id)}
+                    onPointerDown={(e) => handlePointerDown(e, block)}
+                    style={{ touchAction: 'none' }} // Mencegah scroll saat touch di block
                   >
                     <Block
                       shape={block.shape}
                       color={block.color}
-                      onDragEnd={handleDragEnd}
+                      cellSize={cellSize}
                     />
                   </div>
                 ))}
@@ -601,19 +667,18 @@ function GameBoard() {
               </button>
               
               <div className="text-gray-400 text-xs sm:text-sm hidden sm:block">
-                Drag blocks • Fill rows/columns
+                Tap & drag • Fill rows/columns
               </div>
             </div>
           </div>
 
-          {/* Leaderboard Section - Full width on mobile, fixed width on desktop */}
+          {/* Leaderboard Section */}
           <div className="w-full lg:w-80 bg-gray-800 bg-opacity-70 rounded-xl shadow-2xl p-4 sm:p-6 backdrop-blur-sm">
             <div className="flex justify-between items-center mb-4">
               <h2 className="text-lg sm:text-xl font-bold text-transparent bg-clip-text bg-gradient-to-r from-yellow-400 to-orange-500">
                 LEADERBOARD
               </h2>
               
-              {/* Toggle Global/Weekly */}
               <div className="flex bg-gray-700 rounded-lg p-1">
                 <button
                   onClick={() => setLeaderboardType("global")}
@@ -655,13 +720,11 @@ function GameBoard() {
                         : "bg-gray-700/50"
                     }`}
                   >
-                    {/* Fire glow untuk rank 1 */}
                     {rank === 1 && (
                       <div className="absolute -inset-1 bg-gradient-to-r from-yellow-400/30 to-orange-500/30 rounded-lg blur animate-pulse"></div>
                     )}
                     
                     <div className="relative flex items-center gap-2 sm:gap-3">
-                      {/* Rank with medal */}
                       <div className="flex items-center justify-center w-6 h-6 sm:w-8 sm:h-8">
                         {rank <= 3 ? (
                           <span className="text-xl sm:text-2xl">{RANK_ICONS[rank]}</span>
@@ -670,7 +733,6 @@ function GameBoard() {
                         )}
                       </div>
                       
-                      {/* Username */}
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-1 sm:gap-2">
                           <span className={`font-semibold truncate text-sm sm:text-base ${
@@ -688,7 +750,6 @@ function GameBoard() {
                           )}
                         </div>
                         
-                        {/* Score */}
                         <div className="text-xs sm:text-sm text-gray-400">
                           Score: <span className="font-bold text-yellow-400">{entry.highScore}</span>
                         </div>
@@ -705,7 +766,6 @@ function GameBoard() {
               )}
             </div>
             
-            {/* Current player stats */}
             {user && userLeaderboardEntry && (
               <div className="mt-4 p-2 sm:p-3 bg-gray-700 rounded-lg">
                 <div className="text-xs sm:text-sm text-gray-300">Your Position</div>
@@ -723,7 +783,7 @@ function GameBoard() {
         </div>
       </div>
 
-      {/* Custom Scrollbar Styles */}
+      {/* Styles */}
       <style jsx>{`
         .custom-scrollbar::-webkit-scrollbar {
           width: 4px;
@@ -753,6 +813,18 @@ function GameBoard() {
         
         .animate-pop-in {
           animation: pop-in 0.3s ease-out;
+        }
+
+        .cursor-grab {
+          cursor: grab;
+        }
+        
+        .cursor-grabbing {
+          cursor: grabbing;
+        }
+
+        .touch-none {
+          touch-action: none;
         }
       `}</style>
     </div>
