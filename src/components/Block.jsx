@@ -10,33 +10,40 @@ const COLORS = [
   "bg-orange-500",
 ];
 
-function Block({ shape, onDragStart, isSmall = false }) {
-  const [isDragging, setIsDragging] = useState(false);
-  const color = COLORS[Math.floor(Math.random() * COLORS.length)];
-  const cellSize = isSmall ? "w-5 h-5" : "w-10 h-10";
+function Block({ shape, color, onDragStart, onDragEnd, isSmall = false, isDragging: externalDragging }) {
+  const [internalDragging, setInternalDragging] = useState(false);
+  const isDragging = externalDragging !== undefined ? externalDragging : internalDragging;
+  
+  // Ukuran cell yang konsisten untuk semua block
+  const cellSize = "w-10 h-10"; // Ukuran tetap 10x10 untuk semua
 
   const handleDragStart = (e) => {
-    setIsDragging(true);
-    onDragStart(e, shape);
-    e.dataTransfer.setDragImage(new Image(), 0, 0); // Hide default drag image
+    setInternalDragging(true);
+    onDragStart(e);
+    
+    // Buat elemen preview custom yang lebih besar
+    
   };
 
   return (
     <div
       draggable
       onDragStart={handleDragStart}
-      onDragEnd={() => setIsDragging(false)}
-      className={`cursor-grab active:cursor-grabbing transition-transform duration-200 ${
-        isDragging ? "transform scale-200" : "" // Membesar 125% saat di-drag
-      } ${isSmall ? "scale-100" : ""}`} // Kecil (75%) saat di area pilihan
+      onDragEnd={onDragEnd}   
+      className={`cursor-grab active:cursor-grabbing transition-transform ${
+        isDragging ? "opacity-50" : ""
+      }`}
     >
-      <div className="flex flex-col gap-0.5">
+      <div className="flex flex-col" style={{ gap: "0px" }}> {/* Hilangkan gap */}
         {shape.map((row, i) => (
-          <div key={i} className="flex gap-0.5">
+          <div key={i} className="flex" style={{ gap: "0px" }}> {/* Hilangkan gap */}
             {row.map((cell, j) => (
               <div
                 key={j}
-                className={`${cellSize} rounded ${cell ? `${color} shadow-inner` : 'bg-transparent'}`}
+                className={`${cellSize} ${cell ? `${color} shadow-inner border border-white/10` : 'bg-transparent'}`}
+                style={{
+                  // Tidak ada margin/gap
+                }}
               />
             ))}
           </div>
